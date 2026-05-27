@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chat</title>
+    <style>
+        /* Ultra-minimal CSS */
+        body { font-family: sans-serif; background: #ffffff; color: #000000; margin: 0; padding: 5px; font-size: 14px; }
+        .hidden { display: none !important; }
+        
+        input, select, button { font-size: 14px; padding: 5px; margin: 3px 0; max-width: 100%; box-sizing: border-box; }
+        input[type="text"] { width: 70%; }
+        button { border: 1px solid #000; background: #eee; cursor: pointer; }
+        
+        #login-screen { text-align: center; margin-top: 20px; }
+        #header { border-bottom: 2px solid #000; padding-bottom: 5px; margin-bottom: 5px; font-weight: bold; }
+        #typing-indicator { font-size: 12px; color: #666; font-style: italic; }
+        
+        .msg-row { margin-bottom: 8px; clear: both; overflow: hidden; width: 100%; }
+        .msg-bubble { border: 1px solid #ccc; padding: 5px; background: #fafafa; max-width: 85%; word-wrap: break-word; }
+        .msg-mine { border-color: #000; background: #eef7ff; float: right; text-align: right; }
+        .msg-theirs { float: left; }
+        
+        .msg-meta { font-size: 10px; color: #555; margin-top: 3px; }
+        .msg-actions { font-size: 11px; margin-top: 3px; }
+        .msg-actions a { color: blue; text-decoration: underline; cursor: pointer; margin-right: 5px; }
+        
+        .reply-block { font-size: 11px; background: #eee; padding: 3px; margin-bottom: 3px; border-left: 2px solid #000; }
+        .deleted-text { color: #888; font-style: italic; }
+        .img-preview { max-width: 150px; display: block; margin-top: 5px; border: 1px solid #ccc; }
+        
+        #composer { background: #fff; padding: 5px; border-top: 2px solid #000; margin-top: 10px; }
+        #reply-preview { font-size: 12px; background: #ffffe0; padding: 3px; margin-bottom: 5px; border: 1px solid #ccc; }
+    </style>
+
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+</head>
+<body>
+
+    <div id="login-screen">
+        <h3>Log In</h3>
+        <div>
+            <select id="user-select">
+                <option value="">-- Select --</option>
+                <option value="Bro">Bro</option>
+                <option value="Raa">Raa</option>
+            </select>
+        </div>
+        <div><input type="password" id="pass-input" placeholder="Password"></div>
+        <button type="button" id="btn-login" onclick="handleLogin()">Enter</button>
+        <div id="login-error" style="color:red; font-size:12px; margin-top:5px; font-weight:bold;"></div>
+    </div>
+
+    <div id="app-screen" class="hidden">
+        <div id="header">
+            Bro: <span id="status-bro">...</span> | Raa: <span id="status-raa">...</span>
+        </div>
+        <button type="button" id="btn-load-more" class="hidden" onclick="loadMessages(true)">Load Older</button>
+        
+        <div id="messages-container"></div>
+        <div id="typing-indicator" class="hidden">Typing...</div>
+
+        <div id="composer">
+            <div id="reply-preview" class="hidden">
+                Replying to: <span id="reply-text"></span> 
+                <button type="button" id="btn-cancel-reply" style="font-size:10px;" onclick="cancelReply()">Cancel</button>
+            </div>
+            
+            <input type="text" id="msg-input" placeholder="Type here..." onkeypress="handleKeyPress(event)" oninput="handleTyping()">
+            <button type="button" id="btn-send" onclick="sendMessage()">Send</button>
+            <br>
+            <input type="file" id="file-input" accept="image/*" style="width: 180px;">
+        </div>
+    </div>
+
+    <script>
+        // Global Error Catcher for BlackBerry debugging
+        window.onerror = function(msg, url, line) {
+            document.getElementById('login-error').innerHTML += "<br>Sys Error: " + msg;
+            return false;
+        };
+
+        var db = null;
+        var STATE = { user: null, replyTo: null, oldestKey: null, typingTimer: null };
+        var USERS = { "Bro": "Prashad", "Raa": "tiara" };
+
+        // --- Login & Init Logic ---
+        function handleLogin() {
+            var err = document.getElementById('login-error');
+            err.innerHTML = "Loading..."; // Let user know button worked
+            
+            try {
+                var u = document.getElementById('user-select').value;
+                var p = document.getElementById('pass-input').value;
+
+                if (!u) { err.innerHTML = "Select a user."; return; }
+                if (USERS[u] !== p) { err.innerHTML = "Wrong password."; return; }
+
+                // Check if Firebase actually loaded over the network
+                if (typeof firebase === 'undefined') {
+                    err.innerHTML = "Connection Error: Could not load database. Your device might be blocking the connection or needs a certificate update.";
+                    return;
+                }
+
+                // Initialize Firebase safely
+                if (firebase.apps.length === 0) {
+                    firebase.initializeApp({
+                        apiKey: "AIzaSyBwxy_WOOOXJ-f8S7obpTMhOaow50vLgQg",
+                        authDomain: "our-personal-chat-3d13a.firebaseapp.com",
+                        projectId: "our-personal-chat-3d13a",
+                        storageBucket: "our-personal-chat-3d13a.firebasestorage.app",
+                        messagingSenderId: "738185967460",
+                        appId: "1:738185967460:web:a3126225a05616e464ac71"
+                    });
+                }
+                
+                db = firebase.database();
+                STATE.user = u;
+                
+                document.getElementById('login-screen').className = 'hidden';
+                document.getElementById('app-screen').className = '';
+                
+                startApp();
+            } catch (error) {
+                err.innerHTML = "App Error: " + error.message;
+            }
+        }
+
+        // --- Core App Setup ---
+        function startApp() {
+            var myStatus = db.ref('online/' + STATE.user);
+            db.ref('.info/connected').on('value', function(s) {
+                if (s.val() === true) {
+                    myStatus.update({ status: true });
+                    myStatus.onDisconnect().update({ status: false });
+                    db.ref('typing/' + STATE.user).onDisconnect().set(false);
+                }
+            });
+
+            var arr = ['Bro', 'Raa'];
+            for (var i = 0; i < arr.length; i++) {
+                (function(person) {
+                    db.ref('online/' + person + '/status').on('value', function(snap) {
+                        var el = document.getElementById('status-' + person.toLowerCase());
+                        if (el) el.innerHTML = snap.val() ? '<span style="color:green">Online</span>' : 'Offline';
+                    });
+
+                    if (person !== STATE.user) {
+                        db.ref('typing/' + person).on('value', function(snap) {
+                            var ind = document.getElementById('typing-indicator');
+                            if (snap.val()) {
+                                ind.innerHTML = person + ' is typing...';
+                                ind.className = '';
+                            } else {
+                                ind.className = 'hidden';
+                            }
+                        });
+                    }
+                })(arr[i]);
+            }
+
+            loadMessages(false);
+        }
+
+        // --- Message Loading ---
+        function loadMessages(loadOlder) {
+            var ref = db.ref('messages');
+            var msgContainer = document.getElementById('messages-container');
+            var btnLoad = document.getElementById('btn-load-more');
+            
+            if (loadOlder && STATE.oldestKey) {
+                ref.orderByChild('ts').endAt(STATE.oldestKey - 1).limitToLast(20).once('value', function(snap) {
+                    if (snap.exists()) {
+                        var data = snap.val();
+                        var keys = [];
+                        for (var k in data) keys.push(k);
+                        keys.sort(function(a, b) { return data[a].ts - data[b].ts; });
+                        
+                        STATE.oldestKey = data[keys[0]].ts;
+                        var html = '';
+                        for (var i = 0; i < keys.length; i++) {
+                            if (!document.getElementById('msg-' + keys[i])) {
+                                html += buildMsgHTML(data[keys[i]], keys[i]);
+                            }
+                        }
+                        msgContainer.innerHTML = html + msgContainer.innerHTML;
+                    } else {
+                        btnLoad.className = 'hidden';
+                    }
+                });
+            } else {
+                btnLoad.className = '';
+                ref.orderByChild('ts').limitToLast(30).on('value', function(snap) {
+                    if(!snap.exists()) return;
+                    var data = snap.val();
+                    var keys = [];
+                    for (var k in data) keys.push(k);
+                    keys.sort(function(a, b) { return data[a].ts - data[b].ts; });
+
+                    if (keys.length > 0) STATE.oldestKey = data[keys[0]].ts;
+
+                    var html = '';
+                    for (var j = 0; j < keys.length; j++) {
+                        html += buildMsgHTML(data[keys[j]], keys[j]);
+                    }
+                    msgContainer.innerHTML = html;
+                    window.scrollTo(0, document.body.scrollHeight);
+                });
+            }
+        }
+
+        function buildMsgHTML(msg, id) {
+            var isMe = (msg.sender === STATE.user);
+            var cssClass = isMe ? 'msg-bubble msg-mine' : 'msg-bubble msg-theirs';
+            
+            if (!isMe && msg.status !== 'seen') {
+                db.ref('messages/' + id).update({ status: 'seen' });
+            }
+
+            var d = new Date(msg.ts);
+            var h = d.getHours(); var m = d.getMinutes();
+            var ampm = h >= 12 ? 'pm' : 'am';
+            h = h % 12; h = h ? h : 12;
+            m = m < 10 ? '0' + m : m;
+            var timeStr = h + ':' + m + ampm;
+            var statusStr = isMe ? (msg.status === 'seen' ? ' [Read]' : ' [Sent]') : '';
+
+            var inner = '';
+            if (msg.replyTo) {
+                inner += '<div class="reply-block">Replying to: ' + (msg.replyTo.text || 'Image') + '</div>';
+            }
+            if (msg.image) {
+                inner += '<img src="' + msg.image + '" class="img-preview">';
+            }
+
+            var safeText = msg.text ? msg.text.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
+
+            if (msg.deleted) {
+                inner += '<span class="deleted-text">Message deleted</span>';
+            } else {
+                inner += '<span>' + safeText + '</span>' + (msg.edited ? ' <i>(edited)</i>' : '');
+            }
+
+            if (msg.reactions) {
+                var rList = [];
+                for (var r in msg.reactions) rList.push(msg.reactions[r]);
+                inner += '<div><b>Reactions:</b> ' + rList.join(' ') + '</div>';
+            }
+
+            var actionLinks = '<a onclick="act(\'reply\', \'' + id + '\')">Reply</a> | ' +
+                              '<a onclick="act(\'react\', \'' + id + '\')">React</a>';
+            if (isMe && !msg.deleted) {
+                actionLinks += ' | <a onclick="act(\'edit\', \'' + id + '\')">Edit</a>' +
+                               ' | <a onclick="act(\'del\', \'' + id + '\')" style="color:red;">Del</a>';
+            }
+
+            window['msgData_' + id] = msg;
+
+            return '<div class="msg-row" id="msg-' + id + '">' +
+                '<div class="' + cssClass + '">' +
+                    inner +
+                    '<div class="msg-meta">' + timeStr + statusStr + '</div>' +
+                    '<div class="msg-actions">' + actionLinks + '</div>' +
+                '</div>' +
+            '</div>';
+        }
+
+        // --- Sending & Inputs ---
+        function handleKeyPress(e) {
+            if ((e.which || e.keyCode) === 13) sendMessage();
+        }
+
+        function handleTyping() {
+            db.ref('typing/' + STATE.user).update(true);
+            clearTimeout(STATE.typingTimer);
+            STATE.typingTimer = setTimeout(function() {
+                db.ref('typing/' + STATE.user).update(false);
+            }, 1500);
+        }
+
+        function sendMessage() {
+            var msgInput = document.getElementById('msg-input');
+            var fileInput = document.getElementById('file-input');
+            var text = msgInput.value;
+            var file = fileInput.files ? fileInput.files[0] : null;
+            
+            if (!text && !file) return;
+
+            if (file) {
+                var reader = new FileReader();
+                reader.onload = function() { pushMsg(text, reader.result); };
+                reader.readAsDataURL(file);
+            } else {
+                pushMsg(text, null);
+            }
+        }
+
+        function pushMsg(txt, img) {
+            db.ref('messages').push({
+                sender: STATE.user,
+                text: txt,
+                image: img,
+                ts: firebase.database.ServerValue.TIMESTAMP,
+                status: 'delivered',
+                deleted: false,
+                edited: false,
+                replyTo: STATE.replyTo ? { id: STATE.replyTo.id, text: STATE.replyTo.text } : null
+            });
+
+            document.getElementById('msg-input').value = '';
+            var fileInput = document.getElementById('file-input');
+            if (fileInput.value) fileInput.value = '';
+            cancelReply();
+            window.scrollTo(0, document.body.scrollHeight);
+        }
+
+        // --- Actions ---
+        function cancelReply() {
+            STATE.replyTo = null;
+            document.getElementById('reply-preview').className = 'hidden';
+        }
+
+        window.act = function(action, id) {
+            var msg = window['msgData_' + id];
+            if (!msg) return;
+
+            if (action === 'reply') {
+                STATE.replyTo = { id: id, text: msg.text || 'Image' };
+                document.getElementById('reply-text').innerText = STATE.replyTo.text;
+                document.getElementById('reply-preview').className = '';
+                document.getElementById('msg-input').focus();
+                window.scrollTo(0, document.body.scrollHeight);
+            } 
+            else if (action === 'del') {
+                if (confirm("Delete this message?")) {
+                    db.ref('messages/' + id).update({ deleted: true, text: '', image: null });
+                }
+            } 
+            else if (action === 'react') {
+                var emo = prompt("Enter an emoji (e.g. ❤️, 😂):", "❤️");
+                if (emo) {
+                    var obj = {};
+                    obj[STATE.user] = emo;
+                    db.ref('messages/' + id + '/reactions').update(obj);
+                }
+            } 
+            else if (action === 'edit') {
+                var newTxt = prompt("Edit your message:", msg.text);
+                if (newTxt !== null && newTxt !== "") {
+                    db.ref('messages/' + id).update({ text: newTxt, edited: true });
+                }
+            }
+        };
+    </script>
+</body>
+</html>
